@@ -1,0 +1,311 @@
+---
+title: "Practical_ML_Accelemetor"
+author: "Simo"
+date: "April 24, 2019"
+output: html_document
+---
+
+ 
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+ root.dir<- "C:/Users/sdu7/Box Sync/miscellaneous/ML"
+setwd(root.dir) 
+
+##remove.packages("caret")
+ ##install.packages("caret")
+##install.packages("AppliedPredictiveModeling")
+## install.packages("codebook")
+ 
+library(AppliedPredictiveModeling)
+library(caret)
+## library(dataMaid)
+##data(AlzheimerDisease)
+ library(e1071)
+library(haven)
+library(sjlabelled)
+library(dplyr)
+library(pgmm)
+library(rpart)
+library(elasticnet)
+library(randomForest)
+library(lars)
+library(foreach )
+library(doParallel)
+## parallel processing
+## https://nceas.github.io/oss-lessons/parallel-computing-in-r/parallel-computing-in-r.html
+ 
+registerDoSEQ()
+registerDoParallel(4)  ## use multicore, set to the number of our cores
+
+
+ 
+ ##train(... , trControl = trainControl(allowParallel = T)
+## Terminated before complete
+  
+
+
+##stopCluster(cluster)
+registerDoSEQ()
+cluster <- makeCluster(10)
+registerDoParallel(cluster)
+
+
+## library(doMC)
+## registerDoMC(15)
+
+
+ 
+```
+
+
+##  1. Specfic aim and background
+
+####  This project aims to use accelemetors derived from Unilateral Dumbbell Biceps Curl on differnt body parts including belft, foreeam, arm and dumbell from the six participants to predict the five classes of barbell lifts acitivity. Five classes include exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E)
+
+ 
+
+## 2. Load dataset 
+
+```{R final project _ accelemetor }
+
+## read dataset  
+train<- read.csv("C:/Users/sdu7/Box Sync/miscellaneous/ML/pml-training.csv")
+ 
+test<- read.csv("C:/Users/sdu7/Box Sync/miscellaneous/ML/pml-testing.csv")
+
+
+## dataset exploration 
+dim(train)
+dim(test)
+ 
+ 
+## method: rf, gam, gbm, lasso, 
+## accuracy checking 
+## prediction 
+## background search 
+
+ 
+```
+
+## 3. Explore the dataset, missing values, outcome pattern freqency etc. 
+ 
+```{r}
+ 
+summary(train)
+ 
+#### the number of missing cases for each variable 
+colSums(is.na(train))   
+
+
+## check the frequency and percent of outcome variables  
+
+table(train$classe  )  
+ 
+prop.table(table(train$classe  ) ) %>% 
+  round(2)
+
+
+## cross table the outcome variables with individual 
+table(train$user_name,train$classe)
+ 
+prop.table( table( train$user_name,train$classe)  , margin = 1 )  %>% 
+  round(2)
+
+
+```
+
+  Note:   Tere are 160 features, while a few variables have more than 90% missing, which warrant attention. The majority of the class is Class A ,correct exercise pattern, which accounts for 28% of the exercise patterns.  
+
+
+ 
+
+
+ 
+## 4.Feature selection:   
+
+#### We removed zero variance features, variables missing more than 95% and features that are not useful 
+
+```{r}
+
+ 
+## remove zero variance features 
+
+featurezero <- nearZeroVar(train,saveMetrics = T )
+featurezero 
+ 
+ 
+## delete those variables whose variance is near zero & check the deleted features
+feature_delete <- train[,which(featurezero$nzv == "TRUE")]
+ 
+ 
+##  select non-zero variance features
+feature_select <- train[,which(featurezero$nzv == "FALSE")]
+ dim(feature_select ) ## 100 features
+  
+ 
+ ## only choose those with less than 90% missing 
+ feature_select2<- feature_select[  , which(colMeans(is.na(feature_select)) < 0.95  )    ] 
+ dim(feature_select2)  ## 59 features
+ 
+ 
+ ##  Exclude the first 6 columns which are not useful 
+ feature_select3<- feature_select2[ ,   -(1:6)]
+ dim(feature_select3)  
+ str(feature_select3) 
+ 
+ 
+ 
+   
+```
+ 
+ Note:  52 feature have been selected 
+ 
+     
+
+
+## 5 Feature exploration , outlier, distribution etc 
+```{r }
+
+ 
+## select only numeric variables
+
+train_num<- select_if(feature_select3, is.numeric ) 
+
+## check the outlier 
+##outlier(train_num)
+
+## box plot of numeric features
+boxplot(train_num, xlab = "box plot of numeric predictors" )  
+
+## exlucde the variables "magnet_dumbbell_y" 
+  
+boxplot( feature_select3[ , -  which(names(feature_select3) == "magnet_dumbbell_y")   ]  
+         ,  xlab = "box plot of numeric predictors_ Exlcluding the variables 'magnet_dumbbell_y' with extreme value"   ) 
+   
+
+extreme_out <- feature_select3%>% filter(magnet_dumbbell_y < -3000 )
+
+extreme_out
+
+## explore mean and median of magnet_dumbbell_y by five patterns 
+library(table1)
+table1( ~ magnet_dumbbell_y | factor(classe) , data  = feature_select3 %>%  filter(magnet_dumbbell_y > -3000 ) ) 
+
+```
+
+   Note:  After checking the distribution of the features, we found out that there is a variable named magnet_dumbbell_y with extreme values.   We identified the observation with the extreme value  and this observation has a class of B, which is the wrong exercise pattern. We also found out that pattern B have higher magnet_dumbbell_y value in general, so we decided to include the observation into our prediction model since this observation is plausible.
+
+
+
+##  6. Data split for cross validation  
+```{r}
+
+inTrain = createDataPartition(feature_select3$classe, p = 3/4)[[1]]
+
+training = feature_select3[ inTrain,]
+validation = feature_select3[- inTrain,]
+dim(training)
+dim(validation )
+```
+Note: For cross validation, we split our dataset 75% in trainning vs 25% in validation dataset.  
+
+
+
+## 7. Training the Model
+
+##### Since random forest and GBM are the two predictive methods that are most accurate and commonly used methods, we are going to use both of them to predict the model and choose the one based on the performance.
+
+```{r warning =  F }
+ 
+## Random forrest methods 
+
+set.seed(12345)
+fit.rf = randomForest(classe ~ ., data = training )
+summary(fit.rf)
+ 
+
+ 
+ 
+## generalized boosting method
+
+set.seed(54321)
+ 
+fit.gbm<-  train(classe ~ . ,  data= training , method = "gbm", na.action = na.omit ) 
+
+## model plot _random forest
+  
+plot(fit.rf)
+
+## model plot_ GBM 
+plot(fit.gbm) 
+ 
+## 
+  
+ 
+```
+
+ 
+
+
+## 8.  Model Validation
+
+#####  Testing the model performance in training dataset and  valudation data set
+
+```{r}
+
+set.seed(123456)
+rf.pred = predict(fit.rf, training)
+print(confusionMatrix(rf.pred, training$classe))
+  
+#### Validate set accuracy
+ 
+rfvalidation = predict(fit.rf, validation)
+print(confusionMatrix(rfvalidation, validation$classe))
+ 
+
+##fit.gbm
+####
+set.seed(654321)
+gbm.pred = predict(fit.gbm, training)
+print(confusionMatrix(gbm.pred, training$classe))
+  
+#### Validate set accuracy
+ 
+gbm.valid = predict(fit.gbm, validation)
+print(confusionMatrix(gbm.valid, validation$classe))
+ 
+ 
+
+ 
+```
+  
+  For the random forest model, the in-sample accurary is close to 100% and the cross validation accuracy is 99.51%, which means that the out of sample error is around 0.49% . It's expected that out of sample error is larger than in sample error since validating using the same data could have overfitting issue.  For GBM mdoel, the insample and out of sample accuracy is 0.9753 and 0.9631 respectively, lower than that of RF model,we prefer to use RF model in this case.  
+
+
+
+## 9.  Prediction results from the 20 observations 
+```{r}
+
+#### Random forest model
+results = predict(fit.rf, 
+                   test )
+results
+ 
+#### results from GBM model 
+
+results_gbm = predict(fit.gbm,test)
+results_gbm
+
+  
+
+```
+Both models yield the same results, proving the robustness of our models. 
+ 
+ 
+```{r}
+sessionInfo()
+
+```
